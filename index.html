@@ -1,0 +1,1269 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+<title>온라인 클래스</title>
+<!--
+  화상수업 위장 유튜브 플레이어 (1단계: 웹 버전)
+  - 단일 HTML 파일 / 바닐라 JS / 외부 빌드 없음
+  - localStorage 등 브라우저 스토리지 미사용 (설정은 메모리 상태로 관리)
+  - 카메라(getUserMedia)는 https 또는 localhost(보안 컨텍스트)에서만 동작
+  - 2단계 Electron 래핑 대비: 키 입력 / 유튜브 / 웹캠 제어를 각각 모듈로 분리
+    (각 모듈/함수에 [ELECTRON] 주석으로 교체 지점 표시)
+-->
+<style>
+  :root {
+    --bg: #1b1c1f;
+    --bg-2: #232427;
+    --tile: #2a2b2f;
+    --tile-2: #303136;
+    --line: #3a3b40;
+    --text: #e8eaed;
+    --text-dim: #9aa0a6;
+    --accent: #5b8def;
+    --green: #34a853;
+    --red: #ea4335;
+    --radius: 10px;
+    --gap: clamp(6px, 1vmin, 14px);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, "Apple SD Gothic Neo",
+      "Malgun Gothic", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body { overflow: hidden; user-select: none; }
+
+  .screen { height: 100vh; width: 100vw; }
+  .hidden { display: none !important; }
+
+  /* =========================================================
+     설정 화면
+     ========================================================= */
+  #setupScreen {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background:
+      radial-gradient(1200px 600px at 50% -10%, #26323f 0%, transparent 60%),
+      var(--bg);
+  }
+
+  .setup-card {
+    width: min(440px, 100%);
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    padding: 30px 28px 26px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+  }
+
+  .setup-card h1 {
+    margin: 0 0 4px;
+    font-size: 22px;
+    font-weight: 600;
+  }
+  .setup-sub {
+    margin: 0 0 22px;
+    color: var(--text-dim);
+    font-size: 13px;
+  }
+
+  .setup-card label {
+    display: block;
+    font-size: 13px;
+    color: var(--text-dim);
+    margin: 16px 0 6px;
+  }
+
+  .setup-card input[type="text"],
+  .setup-card input[type="number"] {
+    width: 100%;
+    padding: 11px 12px;
+    border-radius: 9px;
+    border: 1px solid var(--line);
+    background: #16171a;
+    color: var(--text);
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.15s, box-shadow 0.15s;
+  }
+  .setup-card input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(91, 141, 239, 0.18);
+  }
+
+  .seg {
+    display: flex;
+    gap: 8px;
+  }
+  .seg button {
+    flex: 1;
+    padding: 11px 0;
+    border-radius: 9px;
+    border: 1px solid var(--line);
+    background: #16171a;
+    color: var(--text);
+    font-size: 15px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .seg button:hover { border-color: #54565c; }
+  .seg button.active {
+    border-color: var(--accent);
+    background: rgba(91, 141, 239, 0.16);
+    color: #cfe0ff;
+  }
+
+  .field-error {
+    color: #ff7a6e;
+    font-size: 12.5px;
+    min-height: 16px;
+    margin-top: 6px;
+  }
+
+  .notice {
+    margin: 20px 0 6px;
+    padding: 11px 12px;
+    border-radius: 9px;
+    background: rgba(91, 141, 239, 0.08);
+    border: 1px solid rgba(91, 141, 239, 0.25);
+    color: #b9c6da;
+    font-size: 12px;
+    line-height: 1.55;
+  }
+  .notice b { color: #d7e2f3; font-weight: 600; }
+
+  .primary-btn {
+    margin-top: 18px;
+    width: 100%;
+    padding: 13px 0;
+    border: none;
+    border-radius: 10px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: filter 0.15s, transform 0.05s;
+  }
+  .primary-btn:hover { filter: brightness(1.08); }
+  .primary-btn:active { transform: translateY(1px); }
+
+  /* =========================================================
+     메인 화면
+     ========================================================= */
+  #mainScreen { display: flex; flex-direction: column; }
+
+  .topbar {
+    height: 56px;
+    flex: 0 0 56px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    background: var(--bg-2);
+    border-bottom: 1px solid var(--line);
+  }
+  .topbar-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
+  .meeting-title {
+    font-size: 15px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 36vw;
+  }
+  .timer {
+    font-size: 13px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.3px;
+  }
+  .topbar-right { display: flex; align-items: center; gap: 16px; }
+
+  .rec {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #f3b6b0;
+    letter-spacing: 0.5px;
+  }
+  .rec-dot {
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: var(--red);
+    box-shadow: 0 0 0 0 rgba(234, 67, 53, 0.6);
+    animation: pulse 1.6s infinite;
+  }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0.55); }
+    70%  { box-shadow: 0 0 0 7px rgba(234, 67, 53, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0); }
+  }
+
+  .participants {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+
+  .ghost-btn {
+    padding: 7px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--text);
+    font-size: 12.5px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .ghost-btn:hover { background: #2d2e33; border-color: #54565c; }
+
+  /* ---- 그리드 ---- */
+  .grid-wrap {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--gap);
+    overflow: hidden;
+  }
+  .grid {
+    display: grid;
+    gap: var(--gap);
+    /* grid-wrap을 가득 채움 → 타일 비율이 화면 비율을 따라가 좌우 여백 없이 꽉 참 */
+    width: 100%;
+    height: 100%;
+  }
+
+  .tile {
+    position: relative;
+    overflow: hidden;
+    border-radius: var(--radius);
+    background: var(--tile);
+    border: 1px solid var(--line);
+    box-shadow: inset 0 0 0 0 var(--green);
+    transition: box-shadow 0.25s ease, border-color 0.25s ease;
+  }
+  .tile.speaking {
+    box-shadow: inset 0 0 0 3px var(--green);
+    border-color: var(--green);
+  }
+
+  /* 프레젠터(유튜브) 영상 - 칸을 꽉 채우도록 cover */
+  .presenter-video {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    background: #000;
+    container-type: size;
+  }
+  .presenter-video iframe {
+    position: absolute !important;
+    top: 50% !important;
+    left: 50% !important;
+    transform: translate(-50%, -50%) !important;
+    /* 16:9 영상을 정사각형 타일에 꽉 차게(가로 크롭) */
+    width: max(100cqw, calc(100cqh * 16 / 9)) !important;
+    height: max(100cqh, calc(100cqw * 9 / 16)) !important;
+    border: 0 !important;
+    pointer-events: none; /* 위장 화면이므로 영상 클릭 비활성 */
+  }
+
+  /* 웹캠 영상 */
+  video.cam {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    background: #000;
+    transform: scaleX(-1); /* 거울 모드 */
+  }
+
+  /* 가짜 프로필 */
+  .profile-bg {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: clamp(20px, 7cqmin, 64px);
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.92);
+  }
+  .profile-img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  /* 화면 끔 / 패닉 off 오버레이 (이름 이니셜 원) */
+  .tile-off {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--tile-2);
+  }
+  .initial-circle {
+    width: clamp(40px, 26cqmin, 120px);
+    height: clamp(40px, 26cqmin, 120px);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: clamp(16px, 11cqmin, 48px);
+    font-weight: 600;
+    color: #fff;
+  }
+
+  /* presenter/me 타일: is-off 일 때만 off 오버레이 표시, 영상 숨김 */
+  .tile[data-role="presenter"] .tile-off,
+  .tile[data-role="me"] .tile-off { display: none; }
+  .tile.is-off[data-role="presenter"] .presenter-video,
+  .tile.is-off[data-role="me"] video.cam { visibility: hidden; }
+  .tile.is-off[data-role="presenter"] .tile-off,
+  .tile.is-off[data-role="me"] .tile-off { display: flex; }
+
+  .cam-note {
+    position: absolute;
+    bottom: 34px;
+    left: 0; right: 0;
+    text-align: center;
+    font-size: 11px;
+    color: var(--text-dim);
+    padding: 0 8px;
+  }
+
+  /* 이름표 (모든 타일 하단) */
+  .namebar {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 14px 10px 8px;
+    background: linear-gradient(to top, rgba(0, 0, 0, 0.62), rgba(0, 0, 0, 0));
+    pointer-events: none;
+  }
+  .namebar .name {
+    font-size: clamp(11px, 3.6cqmin, 15px);
+    font-weight: 500;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .namebar .mic {
+    flex: 0 0 auto;
+    color: var(--red);
+    display: inline-flex;
+  }
+
+  /* =========================================================
+     하단 컨트롤바 (그림만 / 호버 효과)
+     ========================================================= */
+  .controlbar {
+    height: 80px;
+    flex: 0 0 80px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background: var(--bg-2);
+    border-top: 1px solid var(--line);
+  }
+  .ctrl {
+    position: relative;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    border: 1px solid var(--line);
+    background: #2c2d31;
+    color: var(--text);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.05s;
+  }
+  .ctrl:hover { background: #3a3b40; }
+  .ctrl:active { transform: translateY(1px); }
+
+  /* 기본 꺼짐(빨간 사선) - 마이크/카메라 */
+  .ctrl.off {
+    background: #4a2320;
+    border-color: #6e3a35;
+    color: #f3b6b0;
+  }
+  .ctrl.off::after {
+    content: "";
+    position: absolute;
+    width: 30px;
+    height: 2.5px;
+    background: var(--red);
+    border-radius: 2px;
+    transform: rotate(-45deg);
+  }
+
+  .ctrl.leave {
+    width: 64px;
+    border-radius: 26px;
+    background: var(--red);
+    border-color: var(--red);
+    color: #fff;
+  }
+  .ctrl.leave:hover { background: #c5372b; }
+
+  /* =========================================================
+     영상 바꾸기 모달
+     ========================================================= */
+  .modal {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 50;
+  }
+  .modal-card {
+    width: min(420px, 92vw);
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 22px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  }
+  .modal-card h2 { margin: 0 0 14px; font-size: 17px; }
+  .modal-card input {
+    width: 100%;
+    padding: 11px 12px;
+    border-radius: 9px;
+    border: 1px solid var(--line);
+    background: #16171a;
+    color: var(--text);
+    font-size: 14px;
+    outline: none;
+  }
+  .modal-card input:focus { border-color: var(--accent); }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 16px;
+  }
+  .modal-actions .primary-btn { width: auto; margin: 0; padding: 10px 18px; }
+  .modal-actions .ghost-btn { padding: 10px 16px; }
+</style>
+</head>
+<body>
+
+  <!-- ============================ 설정 화면 ============================ -->
+  <section id="setupScreen" class="screen">
+    <div class="setup-card">
+      <h1>온라인 클래스 입장</h1>
+      <p class="setup-sub">참여 정보를 입력하고 시작하세요.</p>
+
+      <form id="setupForm" autocomplete="off" novalidate>
+        <label for="meetingName">수업 / 회의 이름</label>
+        <input id="meetingName" type="text" placeholder="예: 3학년 2반 화상수업" />
+
+        <label>그리드 크기 (2 ~ 5)</label>
+        <div class="seg" id="gridSeg">
+          <button type="button" data-size="2">2 × 2</button>
+          <button type="button" data-size="3" class="active">3 × 3</button>
+          <button type="button" data-size="4">4 × 4</button>
+          <button type="button" data-size="5">5 × 5</button>
+        </div>
+        <input id="gridSize" type="number" min="2" max="5" value="3"
+               inputmode="numeric"
+               style="margin-top:8px" />
+        <div class="field-error" id="gridError"></div>
+
+        <label for="youtubeLink">유튜브 링크</label>
+        <input id="youtubeLink" type="text"
+               placeholder="https://www.youtube.com/watch?v=..." />
+        <div class="field-error" id="linkError"></div>
+
+        <div class="notice">
+          <b>카메라 권한이 필요합니다.</b> "나" 타일에 본인 웹캠을 표시하기 위해
+          브라우저가 카메라 접근을 요청합니다.<br />
+          카메라는 <b>https</b> 또는 <b>localhost</b>(보안 컨텍스트)에서만 켜집니다.
+          파일을 더블클릭(file://)으로 열면 카메라가 동작하지 않을 수 있으니,
+          로컬에서는 localhost로 서빙해 주세요. (권한을 거부하면 "나" 칸은
+          자동으로 화면 끔 상태로 표시됩니다.)
+        </div>
+
+        <button type="submit" class="primary-btn">시작</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- ============================ 메인 화면 ============================ -->
+  <section id="mainScreen" class="screen hidden">
+    <header class="topbar">
+      <div class="topbar-left">
+        <span class="meeting-title" id="meetingTitle"></span>
+        <span class="timer" id="timer">00:00:00</span>
+      </div>
+      <div class="topbar-right">
+        <button class="ghost-btn" id="changeVideoBtn">영상 바꾸기</button>
+        <span class="rec"><span class="rec-dot"></span>REC</span>
+        <span class="participants" title="참가자 수">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round"
+               stroke-linejoin="round">
+            <path d="M16 19v-1a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v1" />
+            <circle cx="9" cy="8" r="3.2" />
+            <path d="M17 14a4 4 0 0 1 4 4v1" />
+            <path d="M16.5 5.2a3.2 3.2 0 0 1 0 6" />
+          </svg>
+          <span id="participantCount">0</span>
+        </span>
+      </div>
+    </header>
+
+    <main class="grid-wrap" id="gridWrap">
+      <div class="grid" id="grid"></div>
+    </main>
+
+    <footer class="controlbar" id="controlbar">
+      <!-- 마이크 (기본 꺼짐 / 클릭 시 표시만 토글) -->
+      <button class="ctrl off" id="micBtn" title="마이크 (꺼짐)" aria-label="마이크">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+             stroke-linejoin="round">
+          <rect x="9" y="3" width="6" height="11" rx="3" />
+          <path d="M6 11a6 6 0 0 0 12 0" />
+          <line x1="12" y1="17" x2="12" y2="21" />
+          <line x1="9" y1="21" x2="15" y2="21" />
+        </svg>
+      </button>
+      <!-- 카메라 (웹캠 실제 on/off 토글) -->
+      <button class="ctrl off" id="camBtn" title="카메라 (꺼짐)" aria-label="카메라">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+             stroke-linejoin="round">
+          <rect x="3" y="6" width="12" height="12" rx="2" />
+          <path d="M15 10l6-3v10l-6-3" />
+        </svg>
+      </button>
+      <!-- 화면 공유 -->
+      <button class="ctrl" title="화면 공유" aria-label="화면 공유">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+             stroke-linejoin="round">
+          <rect x="3" y="4" width="18" height="12" rx="2" />
+          <line x1="8" y1="20" x2="16" y2="20" />
+          <line x1="12" y1="16" x2="12" y2="20" />
+          <path d="M9 9.5l3-3 3 3" />
+          <line x1="12" y1="6.5" x2="12" y2="12" />
+        </svg>
+      </button>
+      <!-- 손들기 -->
+      <button class="ctrl" title="손들기" aria-label="손들기">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+             stroke-linejoin="round">
+          <path d="M8 11V5.5a1.5 1.5 0 0 1 3 0V10" />
+          <path d="M11 10V4.3a1.5 1.5 0 0 1 3 0V10" />
+          <path d="M14 10.4V6a1.5 1.5 0 0 1 3 0v7" />
+          <path d="M8 11v-.6a1.5 1.5 0 0 0-3 0V14c0 3.3 2.4 6 5.5 6H12a5 5 0 0 0 5-5v-2" />
+        </svg>
+      </button>
+      <!-- 채팅 -->
+      <button class="ctrl" title="채팅" aria-label="채팅">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round"
+             stroke-linejoin="round">
+          <path d="M4 5a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H9l-4 3v-3H5a1 1 0 0 1-1-1V5z" />
+        </svg>
+      </button>
+      <!-- 나가기 -->
+      <button class="ctrl leave" title="나가기" aria-label="나가기">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+          <g transform="rotate(135 12 12)">
+            <path d="M6.6 10.8c1.4 2.8 3.8 5.2 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.1.4 2.3.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1C10.6 21 3 13.4 3 4c0-.6.4-1 1-1h3.4c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.4 0 .8-.3 1l-2.1 2.2z" />
+          </g>
+        </svg>
+      </button>
+    </footer>
+  </section>
+
+  <!-- ============================ 영상 바꾸기 모달 ============================ -->
+  <div class="modal hidden" id="videoModal">
+    <div class="modal-card">
+      <h2>영상 바꾸기</h2>
+      <input id="newVideoLink" type="text" placeholder="새 유튜브 링크 붙여넣기" />
+      <div class="field-error" id="modalError"></div>
+      <div class="modal-actions">
+        <button class="ghost-btn" id="modalCancel">취소</button>
+        <button class="primary-btn" id="modalApply">적용</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* =========================================================================
+   준비물 연결 지점 (추후 사용자가 일괄 교체)
+   ========================================================================= */
+
+// [교체 예정] 가짜 참가자 이름(이름표) 목록 — 추후 실제 명단으로 교체.
+//            5×5(25칸)에서도 이름이 안 겹치도록 26개 준비.
+const FAKE_NAMES = [
+  "김민준", "이서연", "박지후", "최예은", "정도현", "강하윤",
+  "조시우", "윤서아", "임건우", "한지민", "오준영", "서다은",
+  "신우진", "권나윤", "황민서", "안태경", "송하준", "배수빈",
+  "문지원", "양준서", "백서윤", "노은우", "류지안", "곽민재",
+  "성예린", "천하늘"
+];
+
+// 학생 사진: ./assets/profiles/frame_001.* ~ frame_024.* (24장, 현재 png)
+//   - 확장자는 png → jpg → jpeg 순으로 자동 시도. 모두 없으면 색 배경+이니셜로 폴백.
+const STUDENT_IMAGE_DIR = "./assets/profiles/";
+const STUDENT_IMAGE_COUNT = 24;
+const STUDENT_IMAGE_EXTS = ["png", "jpg", "jpeg"];
+
+// 교수님 사진: 그리드 크기(2~5)와 무관하게 항상 1칸 포함됨.
+const PROFESSOR_IMAGE_SRCS = [
+  "./assets/profiles/교수님.png",
+  "./assets/profiles/교수님.jpg",
+];
+const PROFESSOR_NAME = "교수님";
+
+// frame 번호(1~24) → 후보 경로 목록 (확장자 폴백)
+function studentImageSrcs(num) {
+  const base = STUDENT_IMAGE_DIR + "frame_" + String(num).padStart(3, "0");
+  return STUDENT_IMAGE_EXTS.map((ext) => base + "." + ext);
+}
+
+/* =========================================================================
+   앱 상태 (메모리 전용 — localStorage 등 스토리지 미사용)
+   ========================================================================= */
+const AppState = {
+  meetingName: "온라인 수업",
+  gridSize: 3,
+  youtubeLink: "",
+  videoId: null,
+  isDisguised: false, // ESC 패닉 상태
+};
+
+/* =========================================================================
+   유틸
+   ========================================================================= */
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+function initialOf(name) {
+  return (name || "").trim().charAt(0) || "?";
+}
+function hueOf(str) {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 360;
+  return h;
+}
+function avatarColor(str) {
+  return `hsl(${hueOf(str)}, 42%, 42%)`;
+}
+function fmtTime(totalSec) {
+  const h = String(Math.floor(totalSec / 3600)).padStart(2, "0");
+  const m = String(Math.floor((totalSec % 3600) / 60)).padStart(2, "0");
+  const s = String(totalSec % 60).padStart(2, "0");
+  return `${h}:${m}:${s}`;
+}
+
+// 이름표용 작은 마이크-꺼짐 아이콘
+const MIC_OFF_ICON = `
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+       stroke="currentColor" stroke-width="2" stroke-linecap="round"
+       stroke-linejoin="round">
+    <path d="M9 9v3a3 3 0 0 0 5 2.2" />
+    <path d="M15 11.5V5a3 3 0 0 0-6 0v.5" />
+    <path d="M6 11a6 6 0 0 0 9.3 5" />
+    <line x1="12" y1="17" x2="12" y2="21" />
+    <line x1="4" y1="3" x2="20" y2="21" />
+  </svg>`;
+
+/* =========================================================================
+   YouTube 제어 모듈  [ELECTRON: 그대로 재사용 가능 — 외부에서 메서드 호출]
+   - IFrame Player API 사용 (API 키 불필요)
+   - parseId: youtu.be / watch?v= / embed / shorts / live / 11자리 ID 처리
+   ========================================================================= */
+const YouTubeController = (() => {
+  let player = null;
+  let apiReady = false;
+  let pendingCreate = null;
+
+  // IFrame API 준비 콜백 (전역)
+  window.onYouTubeIframeAPIReady = () => {
+    apiReady = true;
+    if (pendingCreate) { pendingCreate(); pendingCreate = null; }
+  };
+
+  function loadApi() {
+    if (document.getElementById("yt-api")) return;
+    const s = document.createElement("script");
+    s.id = "yt-api";
+    s.src = "https://www.youtube.com/iframe_api";
+    document.head.appendChild(s);
+  }
+
+  function parseId(url) {
+    if (!url) return null;
+    url = url.trim();
+    const patterns = [
+      /youtu\.be\/([A-Za-z0-9_-]{11})/,
+      /youtube\.com\/embed\/([A-Za-z0-9_-]{11})/,
+      /youtube\.com\/shorts\/([A-Za-z0-9_-]{11})/,
+      /youtube\.com\/live\/([A-Za-z0-9_-]{11})/,
+      /[?&]v=([A-Za-z0-9_-]{11})/,
+    ];
+    for (const p of patterns) {
+      const m = url.match(p);
+      if (m) return m[1];
+    }
+    if (/^[A-Za-z0-9_-]{11}$/.test(url)) return url; // 순수 ID 입력
+    return null;
+  }
+
+  function create(elementId, videoId) {
+    const doCreate = () => {
+      player = new YT.Player(elementId, {
+        videoId,
+        playerVars: {
+          autoplay: 1,
+          controls: 0,
+          disablekb: 1,
+          fs: 0,
+          rel: 0,
+          modestbranding: 1,
+          iv_load_policy: 3,
+          playsinline: 1,
+        },
+        events: {
+          onReady: (e) => { e.target.playVideo(); },
+        },
+      });
+    };
+    if (apiReady) doCreate();
+    else pendingCreate = doCreate;
+  }
+
+  const safe = (fn) => { try { fn(); } catch (_) {} };
+
+  return {
+    loadApi,
+    parseId,
+    create,
+    play:   () => player && safe(() => player.playVideo()),
+    pause:  () => player && safe(() => player.pauseVideo()),
+    mute:   () => player && safe(() => player.mute()),
+    unMute: () => player && safe(() => player.unMute()),
+    loadVideo: (id) => player && safe(() => player.loadVideoById(id)),
+  };
+})();
+
+/* =========================================================================
+   웹캠 제어 모듈  [ELECTRON: 그대로 재사용 가능]
+   - getUserMedia 로 "나" 칸 표시
+   - setEnabled(false): track.enabled=false 로 실제 카메라 송출 중지(위장)
+   ========================================================================= */
+const WebcamController = (() => {
+  let stream = null;
+  let videoEl = null;
+
+  async function start(el) {
+    videoEl = el;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error("getUserMedia 미지원 (https/localhost 필요)");
+    }
+    stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+    videoEl.srcObject = stream;
+    try { await videoEl.play(); } catch (_) {}
+    return stream;
+  }
+  function setEnabled(on) {
+    if (stream) stream.getVideoTracks().forEach((t) => (t.enabled = on));
+  }
+  function stop() {
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    stream = null;
+  }
+  function isActive() { return !!stream; }
+
+  return { start, setEnabled, stop, isActive };
+})();
+
+/* =========================================================================
+   패닉(위장) 토글 로직
+   - 프레젠터 칸: 영상 일시정지+음소거 → 화면 끔 타일로 (그 칸만)
+   - "나" 칸: 웹캠 track.enabled=false → 화면 끔 타일로
+   - 다시 호출하면 복귀
+   ========================================================================= */
+function applyDisguise(on) {
+  AppState.isDisguised = on;
+
+  // ESC(패닉)는 프레젠터(유튜브) 칸만 제어한다.
+  // 웹캠("나" 칸)은 하단 카메라 버튼으로 별도 제어 (ESC와 무관).
+  const pres = document.querySelector('.tile[data-role="presenter"]');
+  if (pres) {
+    if (on) {
+      YouTubeController.pause();
+      YouTubeController.mute();
+      pres.classList.add("is-off");
+    } else {
+      pres.classList.remove("is-off");
+      YouTubeController.unMute();
+      YouTubeController.play();
+    }
+  }
+}
+
+// [ELECTRON] 전역 단축키로 이 함수를 직접 호출하면 됨 (window.FakeClassPlayer.togglePanic)
+function togglePanic() {
+  applyDisguise(!AppState.isDisguised);
+}
+
+/* =========================================================================
+   카메라 켜기/끄기 (하단 컨트롤바 카메라 버튼 전용 — ESC와 별개)
+   - 스트림이 없으면(권한 거부/미지원) 토글 불가
+   ========================================================================= */
+function updateCamButton(on) {
+  const btn = document.getElementById("camBtn");
+  if (btn) {
+    btn.classList.toggle("off", !on);
+    btn.title = on ? "카메라 (켜짐)" : "카메라 (꺼짐)";
+  }
+}
+function setCameraOn(on) {
+  const me = document.querySelector('.tile[data-role="me"]');
+  if (!me) return;
+  if (!WebcamController.isActive()) return; // 사용 가능한 카메라가 없으면 무시
+  WebcamController.setEnabled(on);     // track.enabled 로 실제 송출 on/off
+  me.dataset.camActive = on ? "true" : "false";
+  me.classList.toggle("is-off", !on);  // 끄면 화면 끔 타일, 켜면 영상 표시
+  updateCamButton(on);
+}
+function toggleCamera() {
+  const me = document.querySelector('.tile[data-role="me"]');
+  if (!me) return;
+  setCameraOn(me.dataset.camActive !== "true");
+}
+
+/* =========================================================================
+   키 입력 핸들러 모듈
+   [ELECTRON] 2단계에서 globalShortcut.register('Escape', togglePanic) 등으로
+              교체. 웹 버전에서는 document keydown 으로 바인딩.
+   ========================================================================= */
+const KeyHandler = (() => {
+  function onKeyDown(e) {
+    if (e.key !== "Escape") return;
+    // 영상 바꾸기 모달이 열려 있으면 ESC는 모달 닫기 우선
+    const modal = document.getElementById("videoModal");
+    if (modal && !modal.classList.contains("hidden")) {
+      e.preventDefault();
+      closeVideoModal();
+      return;
+    }
+    e.preventDefault();
+    togglePanic();
+  }
+  function bind() { document.addEventListener("keydown", onKeyDown); }
+  function unbind() { document.removeEventListener("keydown", onKeyDown); }
+  return { bind, unbind, action: togglePanic };
+})();
+
+/* =========================================================================
+   타일 배치 계산
+   - 총 N×N 칸. 프레젠터 1 + 나 1 고정, 나머지를 프로필/화면끔으로 분배.
+   - 배치 예시 기준: 나머지 절반 분배 시 프로필 = ceil, 화면끔 = floor
+     (2×2 → 프1/끔1, 3×3 → 프4/끔3, 4×4 → 프7/끔7, 5×5 → 프12/끔11)
+   - 프로필 중 1칸은 항상 "교수님"으로 고정(그리드 크기 무관, 무조건 포함).
+   - 프레젠터/나 위치는 매번 섞되, 가능하면 모서리(코너)는 피함.
+   ========================================================================= */
+function generateLayout(n) {
+  const total = n * n;
+  const remaining = total - 2;
+  const profileCount = Math.ceil(remaining / 2);
+  const screenOffCount = remaining - profileCount;
+
+  const fillers = [];
+  for (let i = 0; i < profileCount; i++) fillers.push("profile");
+  for (let i = 0; i < screenOffCount; i++) fillers.push("screenoff");
+  // 프로필 1칸을 교수님으로 지정 (profileCount는 n>=2 에서 항상 1 이상).
+  if (profileCount >= 1) fillers[0] = "professor";
+  const shuffledFillers = shuffle(fillers);
+
+  // 프레젠터/나 위치 선정 (코너 회피)
+  const allIdx = [...Array(total).keys()];
+  const corners = new Set([0, n - 1, total - n, total - 1]);
+  const nonCorner = allIdx.filter((i) => !corners.has(i));
+  const pool = nonCorner.length >= 2 ? shuffle(nonCorner) : shuffle(allIdx);
+  const presenterIdx = pool[0];
+  const meIdx = pool[1];
+
+  const result = new Array(total);
+  result[presenterIdx] = { type: "presenter" };
+  result[meIdx] = { type: "me" };
+  let f = 0;
+  for (let i = 0; i < total; i++) {
+    if (i === presenterIdx || i === meIdx) continue;
+    result[i] = { type: shuffledFillers[f++] };
+  }
+  return result;
+}
+
+/* =========================================================================
+   타일 DOM 생성
+   ========================================================================= */
+function makeNamebar(name, color) {
+  return `
+    <div class="namebar">
+      <span class="mic">${MIC_OFF_ICON}</span>
+      <span class="name">${name}</span>
+    </div>`;
+}
+function makeOffOverlay(name) {
+  const init = initialOf(name);
+  return `
+    <div class="tile-off">
+      <div class="initial-circle" style="background:${avatarColor(name)}">${init}</div>
+    </div>`;
+}
+
+/* 후보 경로들을 순서대로 시도하고, 모두 실패하면 숨겨서 배경(이니셜)이 보이게 함 */
+function setupImageFallback(img, srcs) {
+  if (!img) return;
+  let i = 0;
+  img.onerror = () => {
+    i++;
+    if (i < srcs.length) img.src = srcs[i];
+    else { img.onerror = null; img.style.display = "none"; }
+  };
+  img.src = srcs[0];
+}
+
+function buildGrid() {
+  const n = AppState.gridSize;
+  const layout = generateLayout(n);
+  const names = shuffle(FAKE_NAMES);
+  // 학생 사진 번호 1~24 를 섞어 순서대로 배정
+  const studentNums = shuffle(
+    Array.from({ length: STUDENT_IMAGE_COUNT }, (_, i) => i + 1)
+  );
+  let nameI = 0;
+  let studentI = 0;
+
+  const grid = document.getElementById("grid");
+  grid.style.gridTemplateColumns = `repeat(${n}, 1fr)`;
+  grid.style.gridTemplateRows = `repeat(${n}, 1fr)`;
+  grid.innerHTML = "";
+
+  layout.forEach((cell) => {
+    const tile = document.createElement("div");
+    tile.className = "tile";
+    tile.dataset.role = cell.type;
+
+    if (cell.type === "presenter") {
+      const name = names[nameI++ % names.length];
+      tile.innerHTML = `
+        <div class="presenter-video"><div id="ytPlayer"></div></div>
+        ${makeOffOverlay(name)}
+        ${makeNamebar(name)}`;
+    } else if (cell.type === "me") {
+      const name = "나";
+      tile.dataset.camActive = "false";
+      tile.classList.add("is-off"); // 웹캠 준비 전엔 화면 끔 상태로 시작
+      tile.innerHTML = `
+        <video class="cam" autoplay muted playsinline></video>
+        ${makeOffOverlay(name)}
+        ${makeNamebar(name)}`;
+    } else if (cell.type === "professor") {
+      const name = PROFESSOR_NAME;
+      tile.innerHTML = `
+        <div class="profile-bg" style="background:${avatarColor(name)}">${initialOf(name)}</div>
+        <img class="profile-img" alt="" />
+        ${makeNamebar(name)}`;
+      setupImageFallback(tile.querySelector("img.profile-img"), PROFESSOR_IMAGE_SRCS);
+    } else if (cell.type === "profile") {
+      const name = names[nameI++ % names.length];
+      const num = studentNums[studentI++ % studentNums.length];
+      tile.innerHTML = `
+        <div class="profile-bg" style="background:${avatarColor(name)}">${initialOf(name)}</div>
+        <img class="profile-img" alt="" />
+        ${makeNamebar(name)}`;
+      setupImageFallback(tile.querySelector("img.profile-img"), studentImageSrcs(num));
+    } else { // screenoff
+      const name = names[nameI++ % names.length];
+      tile.innerHTML = `
+        ${makeOffOverlay(name)}
+        ${makeNamebar(name)}`;
+    }
+
+    grid.appendChild(tile);
+  });
+}
+
+/* 그리드는 grid-wrap을 가득 채움 (CSS width/height: 100%).
+   타일 비율은 화면 비율을 따라가므로 좌우 여백 없이 화면에 꽉 차게 표시됨.
+   별도 크기 계산은 CSS가 처리하므로 이 함수는 호환용 no-op. */
+function layoutGrid() { /* CSS가 처리 */ }
+
+/* =========================================================================
+   웹캠 시작 (권한 거부 시 "나" 칸을 화면 끔으로 폴백)
+   ========================================================================= */
+async function startWebcam() {
+  const me = document.querySelector('.tile[data-role="me"]');
+  if (!me) return;
+  const video = me.querySelector("video.cam");
+  try {
+    await WebcamController.start(video);
+    me.dataset.camActive = "true";
+    me.classList.remove("is-off"); // 영상 표시
+    updateCamButton(true); // 카메라 버튼: 켜짐 상태로 표시(빨간 사선 해제)
+  } catch (err) {
+    me.dataset.camActive = "false";
+    me.classList.add("is-off"); // 화면 끔 폴백 유지
+    updateCamButton(false); // 카메라 사용 불가 → 버튼 꺼짐 유지
+    const off = me.querySelector(".tile-off");
+    if (off && !off.querySelector(".cam-note")) {
+      const note = document.createElement("div");
+      note.className = "cam-note";
+      note.textContent = "카메라를 사용할 수 없습니다";
+      me.appendChild(note);
+    }
+    console.warn("[웹캠] 시작 실패:", err.message);
+  }
+}
+
+/* =========================================================================
+   경과 시간 타이머
+   ========================================================================= */
+let timerId = null;
+function startTimer() {
+  const startedAt = Date.now();
+  const el = document.getElementById("timer");
+  el.textContent = "00:00:00";
+  if (timerId) clearInterval(timerId);
+  timerId = setInterval(() => {
+    el.textContent = fmtTime(Math.floor((Date.now() - startedAt) / 1000));
+  }, 1000);
+}
+
+/* =========================================================================
+   "말하는 중" 초록 테두리 깜빡임 (선택 구현) — 프로필/화면끔 칸만 가끔
+   ========================================================================= */
+let speakingId = null;
+function startSpeakingSim() {
+  if (speakingId) clearInterval(speakingId);
+  speakingId = setInterval(() => {
+    if (document.hidden) return;
+    const cands = document.querySelectorAll(
+      '.tile[data-role="profile"], .tile[data-role="screenoff"]'
+    );
+    if (!cands.length) return;
+    const t = cands[Math.floor(Math.random() * cands.length)];
+    t.classList.add("speaking");
+    setTimeout(() => t.classList.remove("speaking"), 1500);
+  }, 2800);
+}
+
+/* =========================================================================
+   영상 바꾸기 모달
+   ========================================================================= */
+function openVideoModal() {
+  const modal = document.getElementById("videoModal");
+  const input = document.getElementById("newVideoLink");
+  document.getElementById("modalError").textContent = "";
+  input.value = AppState.youtubeLink || "";
+  modal.classList.remove("hidden");
+  input.focus();
+}
+function closeVideoModal() {
+  document.getElementById("videoModal").classList.add("hidden");
+}
+function applyNewVideo() {
+  const input = document.getElementById("newVideoLink");
+  const err = document.getElementById("modalError");
+  const id = YouTubeController.parseId(input.value);
+  if (!id) {
+    err.textContent = "유효한 유튜브 링크를 입력해 주세요.";
+    return;
+  }
+  AppState.youtubeLink = input.value.trim();
+  AppState.videoId = id;
+  YouTubeController.loadVideo(id);
+  // 위장 중 교체라면 곧바로 음소거+일시정지로 위장 상태 유지
+  if (AppState.isDisguised) {
+    YouTubeController.mute();
+    YouTubeController.pause();
+  }
+  closeVideoModal();
+}
+
+/* =========================================================================
+   설정 화면 → 메인 전환
+   ========================================================================= */
+function bindSetup() {
+  const seg = document.getElementById("gridSeg");
+  const sizeInput = document.getElementById("gridSize");
+
+  // 세그먼트 버튼 ↔ 숫자 입력 동기화
+  seg.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-size]");
+    if (!btn) return;
+    sizeInput.value = btn.dataset.size;
+    syncSeg();
+  });
+  sizeInput.addEventListener("input", syncSeg);
+  function syncSeg() {
+    const v = sizeInput.value;
+    seg.querySelectorAll("button").forEach((b) =>
+      b.classList.toggle("active", b.dataset.size === v)
+    );
+  }
+
+  document.getElementById("setupForm").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const gridError = document.getElementById("gridError");
+    const linkError = document.getElementById("linkError");
+    gridError.textContent = "";
+    linkError.textContent = "";
+
+    const name = document.getElementById("meetingName").value.trim() || "온라인 수업";
+
+    const raw = sizeInput.value.trim();
+    const size = Number(raw);
+    if (raw === "" || !Number.isInteger(size) || size < 2 || size > 5) {
+      gridError.textContent = "2에서 5 사이로 입력해 주세요.";
+      return;
+    }
+
+    const link = document.getElementById("youtubeLink").value.trim();
+    const vid = YouTubeController.parseId(link);
+    if (!vid) {
+      linkError.textContent = "유효한 유튜브 링크를 입력해 주세요.";
+      return;
+    }
+
+    AppState.meetingName = name;
+    AppState.gridSize = size;
+    AppState.youtubeLink = link;
+    AppState.videoId = vid;
+    enterMain();
+  });
+}
+
+function enterMain() {
+  document.getElementById("setupScreen").classList.add("hidden");
+  document.getElementById("mainScreen").classList.remove("hidden");
+
+  document.getElementById("meetingTitle").textContent = AppState.meetingName;
+  document.getElementById("participantCount").textContent =
+    AppState.gridSize * AppState.gridSize;
+
+  buildGrid();
+  layoutGrid();
+  startTimer();
+  startSpeakingSim();
+
+  // [ELECTRON] 웹 버전에서는 document keydown 으로 ESC 바인딩.
+  //            2단계에서는 globalShortcut 으로 togglePanic 호출하도록 교체.
+  KeyHandler.bind();
+
+  // 유튜브 플레이어 생성 (#ytPlayer 는 프레젠터 타일 안에 존재)
+  YouTubeController.create("ytPlayer", AppState.videoId);
+
+  // 웹캠 시작
+  startWebcam();
+}
+
+/* =========================================================================
+   메인 화면 컨트롤 바인딩
+   ========================================================================= */
+function bindMainControls() {
+  // 카메라 버튼: 웹캠 실제 on/off
+  document.getElementById("camBtn").addEventListener("click", (e) => {
+    e.currentTarget.blur();
+    toggleCamera();
+  });
+  // 마이크 버튼: 실제 오디오 기능 없음 — 표시(빨간 사선)만 토글
+  document.getElementById("micBtn").addEventListener("click", (e) => {
+    e.currentTarget.blur();
+    e.currentTarget.classList.toggle("off");
+  });
+
+  document.getElementById("changeVideoBtn").addEventListener("click", (e) => {
+    e.currentTarget.blur();
+    openVideoModal();
+  });
+  document.getElementById("modalCancel").addEventListener("click", closeVideoModal);
+  document.getElementById("modalApply").addEventListener("click", applyNewVideo);
+  document.getElementById("newVideoLink").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); applyNewVideo(); }
+  });
+  // 모달 바깥 클릭 시 닫기
+  document.getElementById("videoModal").addEventListener("click", (e) => {
+    if (e.target.id === "videoModal") closeVideoModal();
+  });
+}
+
+/* =========================================================================
+   초기화
+   ========================================================================= */
+document.addEventListener("DOMContentLoaded", () => {
+  YouTubeController.loadApi(); // 미리 IFrame API 로드
+  bindSetup();
+  bindMainControls();
+});
+
+/* =========================================================================
+   [ELECTRON] 외부(메인 프로세스/프리로드)에서 접근할 수 있도록 노출.
+   전역 단축키 → window.FakeClassPlayer.togglePanic() 처럼 호출 가능.
+   ========================================================================= */
+window.FakeClassPlayer = {
+  togglePanic,
+  applyDisguise,
+  toggleCamera,
+  setCameraOn,
+  setVideo: (url) => {
+    const id = YouTubeController.parseId(url);
+    if (id) {
+      AppState.youtubeLink = url;
+      AppState.videoId = id;
+      YouTubeController.loadVideo(id);
+    }
+    return id;
+  },
+  youtube: YouTubeController,
+  webcam: WebcamController,
+  keys: KeyHandler,
+  state: AppState,
+};
+</script>
+</body>
+</html>
