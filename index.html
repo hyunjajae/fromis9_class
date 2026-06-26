@@ -42,7 +42,8 @@
 
   body { overflow: hidden; user-select: none; }
 
-  .screen { height: 100vh; width: 100vw; }
+  /* 모바일 주소창 등으로 100vh가 어긋나는 문제를 위해 dvh 폴백 사용 */
+  .screen { height: 100vh; height: 100dvh; width: 100vw; }
   .hidden { display: none !important; }
 
   /* =========================================================
@@ -50,12 +51,28 @@
      ========================================================= */
   #setupScreen {
     display: flex;
+    /* 내용이 화면보다 길면 위가 잘리지 않게 'safe center' → 위에서부터 스크롤 */
     align-items: center;
+    align-items: safe center;
     justify-content: center;
     padding: 24px;
+    /* 카드가 화면보다 길면 세로 스크롤 (모바일에서 '시작' 버튼이 가리지 않도록) */
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
     background:
       radial-gradient(1200px 600px at 50% -10%, #26323f 0%, transparent 60%),
       var(--bg);
+  }
+
+  /* 화면이 짧거나 좁을 때(모바일) 설정 카드 여백/글자 축소로 한 화면에 더 잘 맞춤 */
+  @media (max-height: 660px), (max-width: 420px) {
+    #setupScreen { padding: 16px; }
+    .setup-card { padding: 20px 18px 18px; border-radius: 14px; }
+    .setup-card h1 { font-size: 19px; }
+    .setup-sub { margin-bottom: 14px; }
+    .setup-card label { margin: 12px 0 5px; }
+    .notice { margin: 14px 0 4px; font-size: 11.5px; padding: 10px; }
+    .primary-btn { margin-top: 14px; padding: 12px 0; }
   }
 
   .setup-card {
